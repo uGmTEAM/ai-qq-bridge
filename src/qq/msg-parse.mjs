@@ -13,6 +13,75 @@ function chatTypeName (chatType) {
   return 'other';
 }
 
+function stripXml (xml) {
+  return String(xml || '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+}
+
+function parseJson (text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function grayTipSegment (gray) {
+  const revoke = gray.revokeElement;
+  if (revoke && (revoke.operatorUid || revoke.operatorNick || revoke.wording)) {
+    return {
+      type: 'recall',
+      operator_uid: String(revoke.operatorUid || ''),
+      operator_name: String(revoke.operatorNick || revoke.operatorRemark || revoke.operatorMemRemark || ''),
+      is_self: Boolean(revoke.isSelfOperate),
+      wording: String(revoke.wording || '')
+    };
+  }
+
+  const jsonTip = gray.jsonGrayTipElement;
+  if (jsonTip?.jsonStr) {
+    const json = parseJson(jsonTip.jsonStr);
+    const items = Array.isArray(json?.items) ? json.items : [];
+    const people = items.filter(item => item && (item.uid || item.uin || item.jp));
+    const text = items.map(item => String(item?.txt || '')).join('').trim();
+    if (String(jsonTip.busiId || '') === '1061' && people.length >= 1) {
+      return {
+        type: 'poke',
+        busi_id: '1061',
+        sender_uid: String(people[0].uid || people[0].uin || people[0].jp || ''),
+        sender_name: String(people[0].txt || ''),
+        target_uid: String(people[1]?.uid || people[1]?.uin || people[1]?.jp || ''),
+        target_name: String(people[1]?.txt || ''),
+        text
+      };
+    }
+    return {
+      type: 'gray_tip',
+      busi_id: String(jsonTip.busiId || ''),
+      text: text || String(jsonTip.recentAbstract || '')
+    };
+  }
+
+  const xml = gray.xmlElement;
+  if (xml?.content) {
+    return {
+      type: 'gray_tip',
+      busi_id: String(xml.busiId || ''),
+      templ_id: String(xml.templId || ''),
+      text: stripXml(xml.content)
+    };
+  }
+
+  return {
+    type: 'gray_tip',
+    sub_type: Number(gray.subElementType || 0),
+    text: ''
+  };
+}
+
 function attachmentKey (raw, element) {
   return `${raw.msgId}:${element.elementId}`;
 }
@@ -157,11 +226,28 @@ export async function parseRawMessage (raw, ctx, options = {}) {
       }
       case 6: {
         const face = element.faceElement || {};
-        segments.push({
-          type: 'face',
-          id: Number(face.faceIndex || 0),
-          text: face.faceText || ''
-        });
+        if (Number(face.faceType) === 5 || face.pokeType != null) {
+          const poke = {
+            type: 'poke',
+            poke_type: Number(face.pokeType || 0),
+            face_index: Number(face.faceIndex || 0),
+            text: face.faceText || ''
+          };
+          if (chatType === 'private') {
+            poke.sender_uin = String(raw.senderUin || '');
+            poke.sender_name = String(raw.sendMemberName || raw.sendNickName || raw.sendRemarkName || '');
+            poke.target_uin = isSelf ? String(raw.peerUin || raw.peerUid || '') : String(ctx.selfInfo.uin || '');
+            poke.target_name = isSelf ? String(raw.peerName || '') : String(ctx.selfInfo.nick || '');
+          }
+          segments.push(poke);
+        } else {
+          segments.push({
+            type: 'face',
+            id: Number(face.faceIndex || 0),
+            text: face.faceText || '',
+            face_type: Number(face.faceType || 0)
+          });
+        }
         break;
       }
       case 7: {
@@ -174,8 +260,40 @@ export async function parseRawMessage (raw, ctx, options = {}) {
         });
         break;
       }
+      case 8: {
+        const gray = element.grayTipElement;
+        if (!gray) {
+          segments.push({ type: 'gray_tip', text: '' });
+          break;
+        }
+        segments.push(grayTipSegment(gray));
+        break;
+      }
+      case 9:
+        segments.push({ type: 'wallet' });
+        break;
       case 10:
         segments.push({ type: 'ark' });
+        break;
+      case 11: {
+        const market = element.marketFaceElement || {};
+        const emojiId = String(market.emojiId || '');
+        segments.push({
+          type: 'market_face',
+          name: String(market.faceName || ''),
+          emoji_id: emojiId,
+          package_id: Number(market.emojiPackageId || 0),
+          url: emojiId
+            ? `https://gxh.vip.qq.com/club/item/parcel/item/${emojiId.slice(0, 2)}/${emojiId}/raw300.gif`
+            : ''
+        });
+        break;
+      }
+      case 12:
+        segments.push({ type: 'live_gift' });
+        break;
+      case 13:
+        segments.push({ type: 'long_msg' });
         break;
       case 16:
         segments.push({
