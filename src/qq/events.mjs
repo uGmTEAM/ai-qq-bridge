@@ -17,7 +17,7 @@ export function startIngest (ctx) {
     (async () => {
       for (const raw of list || []) {
         try {
-          await enqueueRaw(raw, { downloadImages: true });
+          await enqueueRaw(raw, { downloadImages: true, downloadFiles: true });
         } catch (error) {
           ctx.logger?.error('[ingest] 处理消息失败', error);
         }
@@ -76,7 +76,7 @@ export async function backfillRecent (ctx) {
         if (Number(raw.msgTime || 0) <= since) continue;
         if (String(raw.senderUin || '') === String(ctx.selfInfo.uin || '')) continue;
         if (ctx.queue.hasSeen(String(raw.msgId))) continue;
-        const message = await parseRawMessage(raw, ctx, { downloadImages: false });
+        const message = await parseRawMessage(raw, ctx, { downloadImages: false, downloadFiles: false });
         if (!message) continue;
         ctx.queue.append(message);
         ctx.emitMessage?.(message);

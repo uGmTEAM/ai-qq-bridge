@@ -21,6 +21,9 @@
   },
   "media": {
     "autoDownloadImages": true,
+    "autoDownloadFiles": true,
+    "retentionDays": 10,
+    "cleanupIntervalMs": 3600000,
     "imageTimeoutMs": 20000,
     "maxDownloadBytes": 104857600,
     "maxUploadBytes": 209715200

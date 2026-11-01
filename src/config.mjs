@@ -25,6 +25,9 @@ export const DEFAULT_CONFIG = {
   },
   media: {
     autoDownloadImages: true,
+    autoDownloadFiles: true,
+    retentionDays: 10,
+    cleanupIntervalMs: 3600000,
     imageTimeoutMs: 20000,
     maxDownloadBytes: 104857600,
     maxUploadBytes: 209715200
@@ -94,6 +97,8 @@ export function loadConfig () {
   if (process.env.BRIDGE_QQ_APP_DIR) config.qq.appDir = process.env.BRIDGE_QQ_APP_DIR;
   if (process.env.BRIDGE_QQ_DATA_DIR) config.qq.dataDir = process.env.BRIDGE_QQ_DATA_DIR;
   if (process.env.BRIDGE_ONEBOT_ENABLED !== undefined) config.onebot.enabled = envBool('BRIDGE_ONEBOT_ENABLED', false);
+  if (process.env.BRIDGE_MEDIA_RETENTION_DAYS) config.media.retentionDays = Number(process.env.BRIDGE_MEDIA_RETENTION_DAYS);
+  if (process.env.BRIDGE_MEDIA_CLEANUP_INTERVAL_MS) config.media.cleanupIntervalMs = Number(process.env.BRIDGE_MEDIA_CLEANUP_INTERVAL_MS);
   if (process.env.BRIDGE_LOG_LEVEL) config.log.level = process.env.BRIDGE_LOG_LEVEL;
   if (process.env.BRIDGE_EXPERIMENTAL_SOCIAL !== undefined) {
     config.features.experimentalSocial = envBool('BRIDGE_EXPERIMENTAL_SOCIAL', false);

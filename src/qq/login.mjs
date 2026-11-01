@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
 import { sleep } from '../util.mjs';
+import { readJson, writeJsonAtomic } from '../util.mjs';
 
 /**
  * 扫码登录 / 快速登录 / 掉线状态管理。
@@ -64,8 +65,10 @@ export class LoginManager extends EventEmitter {
         quick: !!item.isQuickLogin
       }));
       this._set({ login_list: list });
+      return list;
     } catch (error) {
       this.logger?.debug('[login] 获取历史登录列表失败', error);
+      return [];
     }
   }
 
@@ -138,6 +141,9 @@ export class LoginManager extends EventEmitter {
       onQRCodeLoginSucceed: (result = {}) => {
         this._handleOnline({ uin: String(result.uin || ''), uid: String(result.uid || '') });
       },
+      onQRCodeSessionQuickLoginFailed: (...args) => {
+        this.logger?.warn('[login] 快速登录会话失败', JSON.stringify(args));
+      },
       onLoginFailed: (...args) => {
         const info = JSON.stringify(args);
         this._set({ phase: 'offline', online: false, error: `登录失败: ${info}` });
@@ -170,13 +176,37 @@ export class LoginManager extends EventEmitter {
 
   async _beginLogin (account) {
     if (this.state.online) return;
+    if (this.config.qq.autoLogin === false) {
+      this.logger?.info('[login] 已关闭自动登录，等待扫码');
+      this.requestQR();
+      return;
+    }
     const target = String(account || this.config.qq.account || '').trim();
     if (target && !this._quickTried) {
       this._quickTried = true;
-      const ok = await this.quickLogin(target);
-      if (ok) return;
+      // QQ 登录服务刚连上时立刻调用 quickLogin 会稳定返回“登录态已失效”，
+      // 这里先给内核一点初始化时间，再做有限重试，最后才退回二维码。
+      await sleep(1500);
+      await this._refreshLoginList();
+      for (let attempt = 1; attempt <= 3 && !this.state.online; attempt++) {
+        const ok = await this.quickLogin(target);
+        if (ok) return;
+        this.logger?.warn(`[login] 快速登录第 ${attempt} 次失败`);
+        if (attempt < 3) await sleep(1500);
+      }
     }
     this.requestQR();
+  }
+
+  _persistAccount (uin) {
+    try {
+      const raw = readJson(this.config._configPath, {});
+      raw.qq = { ...(raw.qq || {}), account: String(uin) };
+      writeJsonAtomic(this.config._configPath, raw);
+      this.config.qq.account = String(uin);
+    } catch (error) {
+      this.logger?.warn('[login] 保存账号失败', error?.message || error);
+    }
   }
 
   async quickLogin (uin) {
@@ -235,6 +265,7 @@ export class LoginManager extends EventEmitter {
       // ignore
     }
     this.logger?.info(`[login] 登录成功 uin=${uin}`);
+    this._persistAccount(uin);
     if (this._onlineWaiter) {
       clearTimeout(this._onlineTimer);
       const resolve = this._onlineWaiter;

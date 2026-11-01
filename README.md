@@ -113,6 +113,11 @@ AI 容器与桥接容器同主机时，把 `127.0.0.1` 换成宿主内网 IP 即
     { "uin": "10001", "note": "主账号" },
     { "uin": "10002", "note": "备用账号" }
   ],
+  "media": {
+    "autoDownloadImages": true,
+    "autoDownloadFiles": true,
+    "retentionDays": 10
+  },
   "onebot": { "enabled": false, "port": 3000, "token": "" }
 }
 ```
@@ -136,8 +141,8 @@ AI 容器与桥接容器同主机时，把 `127.0.0.1` 换成宿主内网 IP 即
     { "type": "at", "qq": "20001", "name": "小红" },
     { "type": "image", "file": "a.png", "size": 1234, "width": 100, "height": 80,
       "local_path": "/data/media/2026-10/xxx.png", "media_url": "/v1/media/2026-10/xxx.png" },
-    { "type": "file", "name": "报告.pdf", "size": 9000, "attachment_id": "msgId:elementId" },
-    { "type": "reply", "id": "上一条的 msgId", "seq": "123" }
+    { "type": "file", "name": "报告.pdf", "size": 9000, "local_path": "/data/media/2026-10/yyy.pdf", "attachment_id": "msgId:elementId" },
+    { "type": "reply", "id": "上一条的 msgId", "seq": "123", "sender_name": "小红", "text": "被引用的原文" }
   ]
 }
 ```
@@ -212,9 +217,11 @@ curl -s -X POST http://127.0.0.1:3100/v1/messages \
 }
 ```
 
-### 附件按需下载
+### 附件下载与保留
 
-图片默认自动下载（`media.autoDownloadImages`）；文件/语音/视频只返回元数据，调用：
+图片和文件默认自动下载（`media.autoDownloadImages` / `media.autoDownloadFiles`），保存到 `/data/media/YYYY-MM/`，并按 `media.retentionDays`（默认 10 天）自动清理；服务启动时和之后每小时各清理一次，按文件最后接收/引用时间计算。
+
+语音和视频仍按需下载：
 
 ```bash
 curl -s -X POST http://127.0.0.1:3100/v1/media/fetch \

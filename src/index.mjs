@@ -35,6 +35,20 @@ app.media = new MediaStore({
   logger: app.logger
 });
 
+function runMediaCleanup () {
+  try {
+    app.media.cleanup({ retentionDays: app.config.media.retentionDays });
+  } catch (error) {
+    app.logger?.warn('[media] 清理失败', error?.message || error);
+  }
+}
+runMediaCleanup();
+const mediaCleanupTimer = setInterval(
+  runMediaCleanup,
+  Math.max(60000, Number(app.config.media.cleanupIntervalMs || 3600000))
+);
+mediaCleanupTimer.unref?.();
+
 app.emitMessage = message => app.emit('message', message);
 
 function inspectCapabilities (session) {

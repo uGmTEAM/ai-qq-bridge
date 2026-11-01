@@ -29,7 +29,21 @@ function parseJson (text) {
   }
 }
 
-function grayTipSegment (gray) {
+function grayTipKind (text, busiId, templId) {
+  const t = String(text || '');
+  if (String(templId) === '10382' || /赞了|点赞|表情/.test(t)) return 'emoji_like';
+  if (/加入|入群|加群/.test(t)) return 'group_join';
+  if (/退出|退群|离开/.test(t)) return 'group_leave';
+  if (/移出|踢出|被移出/.test(t)) return 'group_kick';
+  if (/头衔|称号/.test(t)) return 'group_title';
+  if (/管理员|群主/.test(t)) return 'group_admin';
+  if (String(busiId) === '2401') return 'essence';
+  if (String(busiId) === '2000') return 'recall_guide';
+  if (['2041', '2701'].includes(String(busiId))) return 'guide';
+  return 'system';
+}
+
+function grayTipSegment (gray, selfInfo = {}) {
   const revoke = gray.revokeElement;
   if (revoke && (revoke.operatorUid || revoke.operatorNick || revoke.wording)) {
     return {
@@ -45,21 +59,41 @@ function grayTipSegment (gray) {
   if (jsonTip?.jsonStr) {
     const json = parseJson(jsonTip.jsonStr);
     const items = Array.isArray(json?.items) ? json.items : [];
-    const people = items.filter(item => item && (item.uid || item.uin || item.jp));
-    const text = items.map(item => String(item?.txt || '')).join('').trim();
+    const people = items.filter(item => {
+      if (!item) return false;
+      const uid = String(item.uid || item.uin || '');
+      const txt = String(item.txt || '');
+      return uid && !/^https?:\/\//i.test(uid) && !/^https?:\/\//i.test(txt);
+    });
+    const text = items
+      .map(item => String(item?.txt || ''))
+      .filter(item => item && !/^https?:\/\//i.test(item))
+      .join('')
+      .trim();
+    const actionMatch = String(jsonTip.jsonStr).match(/[?&]actionId=(\d+)/i);
+    const actionValue = items.find(item => item?.actionId != null)?.actionId;
+    const actionId = actionValue != null ? Number(actionValue) : actionMatch ? Number(actionMatch[1]) : null;
+
     if (String(jsonTip.busiId || '') === '1061' && people.length >= 1) {
+      const hitSelf = actionId === 8;
       return {
         type: 'poke',
         busi_id: '1061',
-        sender_uid: String(people[0].uid || people[0].uin || people[0].jp || ''),
+        action_id: actionId,
+        sender_uid: String(people[0].uid || people[0].uin || ''),
         sender_name: String(people[0].txt || ''),
-        target_uid: String(people[1]?.uid || people[1]?.uin || people[1]?.jp || ''),
-        target_name: String(people[1]?.txt || ''),
+        target_uid: hitSelf
+          ? String(people[1]?.uid || people[1]?.uin || selfInfo.uid || selfInfo.uin || '')
+          : String(people[1]?.uid || people[1]?.uin || ''),
+        target_name: hitSelf
+          ? String(people[1]?.txt || selfInfo.nick || '')
+          : String(people[1]?.txt || ''),
         text
       };
     }
     return {
       type: 'gray_tip',
+      kind: grayTipKind(text, jsonTip.busiId, ''),
       busi_id: String(jsonTip.busiId || ''),
       text: text || String(jsonTip.recentAbstract || '')
     };
@@ -67,18 +101,94 @@ function grayTipSegment (gray) {
 
   const xml = gray.xmlElement;
   if (xml?.content) {
+    const text = stripXml(xml.content);
     return {
       type: 'gray_tip',
+      kind: grayTipKind(text, xml.busiId, xml.templId),
       busi_id: String(xml.busiId || ''),
       templ_id: String(xml.templId || ''),
-      text: stripXml(xml.content)
+      text
     };
   }
 
   return {
     type: 'gray_tip',
+    kind: 'system',
     sub_type: Number(gray.subElementType || 0),
     text: ''
+  };
+}
+
+function rawMessageText (raw) {
+  const parts = [];
+  for (const element of raw?.elements || []) {
+    switch (Number(element.elementType)) {
+      case 1: {
+        const text = element.textElement?.content;
+        if (text) parts.push(String(text));
+        break;
+      }
+      case 2:
+        parts.push('[图片]');
+        break;
+      case 3:
+        parts.push(`[文件 ${element.fileElement?.fileName || ''}]`);
+        break;
+      case 4:
+        parts.push(`[语音 ${Number(element.pttElement?.duration || 0)}s]`);
+        break;
+      case 5:
+        parts.push('[视频]');
+        break;
+      case 6: {
+        const face = element.faceElement || {};
+        parts.push(Number(face.faceType) === 5 ? '[戳一戳]' : `[表情 ${face.faceText || ''}]`);
+        break;
+      }
+      case 8: {
+        const gray = grayTipSegment(element.grayTipElement || {}, {});
+        parts.push(gray.type === 'poke' ? '[戳一戳]' : (gray.text || '[灰条消息]'));
+        break;
+      }
+      case 11:
+        parts.push(`[表情 ${element.marketFaceElement?.faceName || ''}]`);
+        break;
+      case 16:
+        parts.push('[合并转发]');
+        break;
+      default:
+        break;
+    }
+  }
+  return parts.join('').trim().slice(0, 300);
+}
+
+async function resolveReply (ctx, raw, reply) {
+  const service = ctx?.session?.getMsgService?.();
+  if (!service) return null;
+  const peer = { chatType: raw.chatType, peerUid: String(raw.peerUid || ''), guildId: '' };
+  const seq = String(reply.seq || '');
+  const id = String(reply.id || '');
+  let rawReply = null;
+  try {
+    if (seq && seq !== '0' && typeof service.getMsgsBySeqAndCount === 'function') {
+      const res = await service.getMsgsBySeqAndCount(peer, seq, 1, true, true);
+      rawReply = res?.msgList?.[0];
+    }
+    if (!rawReply && id && id !== '0') {
+      const res = await service.getMsgsByMsgId(peer, [id]);
+      rawReply = res?.msgList?.[0];
+    }
+  } catch (error) {
+    ctx.logger?.debug?.('[msg] 引用消息解析失败', error?.message || error);
+  }
+  if (!rawReply) return null;
+  return {
+    id: String(rawReply.msgId || id || ''),
+    seq: String(rawReply.msgSeq || seq || ''),
+    sender_uin: String(rawReply.senderUin || reply.sender_uin || ''),
+    sender_name: String(rawReply.sendMemberName || rawReply.sendNickName || rawReply.sendRemarkName || ''),
+    text: rawMessageText(rawReply)
   };
 }
 
@@ -123,8 +233,8 @@ export async function downloadAttachment (ctx, raw, element, options = {}) {
   return ctx.media.saveFile(filePath, name);
 }
 
-async function tryAutoDownload (ctx, raw, element, meta) {
-  if (!ctx.config.media.autoDownloadImages) return meta;
+async function tryAutoDownload (ctx, raw, element, meta, enabled = true) {
+  if (!enabled) return meta;
   const size = Number(element.picElement?.fileSize || element.fileElement?.fileSize || 0);
   if (size > Number(ctx.config.media.maxDownloadBytes || 0)) return meta;
   try {
@@ -179,13 +289,15 @@ export async function parseRawMessage (raw, ctx, options = {}) {
           md5: pic.md5HexStr || '',
           url: pic.originImageUrl || ''
         };
-        if (options.downloadImages) meta = await tryAutoDownload(ctx, raw, element, meta);
+        if (options.downloadImages && ctx.config.media.autoDownloadImages !== false) {
+          meta = await tryAutoDownload(ctx, raw, element, meta, true);
+        }
         segments.push(meta);
         break;
       }
       case 3: {
         const file = element.fileElement || {};
-        segments.push({
+        let meta = {
           type: 'file',
           element_id: element.elementId,
           attachment_id: attachmentKey(raw, element),
@@ -193,7 +305,11 @@ export async function parseRawMessage (raw, ctx, options = {}) {
           size: Number(file.fileSize || 0),
           path: file.filePath || '',
           md5: file.fileMd5 || ''
-        });
+        };
+        if (options.downloadFiles && ctx.config.media.autoDownloadFiles !== false) {
+          meta = await tryAutoDownload(ctx, raw, element, meta, true);
+        }
+        segments.push(meta);
         break;
       }
       case 4: {
@@ -263,10 +379,10 @@ export async function parseRawMessage (raw, ctx, options = {}) {
       case 8: {
         const gray = element.grayTipElement;
         if (!gray) {
-          segments.push({ type: 'gray_tip', text: '' });
+          segments.push({ type: 'gray_tip', kind: 'system', text: '' });
           break;
         }
-        segments.push(grayTipSegment(gray));
+        segments.push(grayTipSegment(gray, ctx.selfInfo || {}));
         break;
       }
       case 9:
@@ -305,6 +421,12 @@ export async function parseRawMessage (raw, ctx, options = {}) {
       default:
         segments.push({ type: 'unknown', element_type: element.elementType });
     }
+  }
+
+  const replySegment = segments.find(segment => segment.type === 'reply');
+  if (replySegment && !options.skipReplyResolve) {
+    const resolved = await resolveReply(ctx, raw, replySegment);
+    if (resolved) Object.assign(replySegment, resolved);
   }
 
   return {
